@@ -8,7 +8,7 @@ from abc import ABC, abstractmethod
 import scipy, torch, torchdiffeq, numpy
 import numpy as np
 from neuromancer.psl.norms import StandardScaler, normalize, denormalize
-from neuromancer.psl.signals import sines
+from neuromancer.psl.signals import sines, noise
 import matplotlib.pyplot as plt
 from typing import Union
 
@@ -22,10 +22,10 @@ def download(url, dst):
     :param dst: (str pathlike) Where to store the data on disk
     """
     if not os.path.exists(dst):
-        print(f'Downloading file {url} and saving to {dst}...')
+        print(f"Downloading file {url} and saving to {dst}...")
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         r = requests.get(url)
-        with open(dst, 'wb') as f:
+        with open(dst, "wb") as f:
             f.write(r.content)
 
 
@@ -41,20 +41,21 @@ def grad(tensor, requires_grad):
 
 
 class Backend:
-    numpy_backend = {'odeint': functools.partial(scipy.integrate.odeint, tfirst=True),
-                     'cat': numpy.concatenate,
-                     'cast': numpy.array,
-                     'core': numpy,
-                     'grad': lambda x, requires_grad: x,
-                     }
-    torch_backend = {'odeint': torchdiffeq.odeint,
-                     'cat': torch.cat,
-                     'cast': torch.tensor,
-                     'core': torch,
-                     'grad': grad,
-                     }
-    backends = {'torch': torch_backend,
-                'numpy': numpy_backend}
+    numpy_backend = {
+        "odeint": functools.partial(scipy.integrate.odeint, tfirst=True),
+        "cat": numpy.concatenate,
+        "cast": numpy.array,
+        "core": numpy,
+        "grad": lambda x, requires_grad: x,
+    }
+    torch_backend = {
+        "odeint": torchdiffeq.odeint,
+        "cat": torch.cat,
+        "cast": torch.tensor,
+        "core": torch,
+        "grad": grad,
+    }
+    backends = {"torch": torch_backend, "numpy": numpy_backend}
 
     def __init__(self, backend):
         """
@@ -78,10 +79,12 @@ class EquationWrapper:
         :param U: (2-D array of control actions)
         :param equations: (Callable) Function with signature (t, x, u)
         """
-        if backend.backend == 'numpy':
-            self.ufunc = scipy.interpolate.interp1d(Time, U, kind='previous', axis=0, fill_value='extrapolate')
-        elif backend.backend == 'torch':
-            self.ufunc = scipy.interpolate.interp1d(Time, numpy.array(U.numpy(force=True)), kind='previous', axis=0, fill_value='extrapolate')
+        if backend.backend == "numpy":
+            self.ufunc = scipy.interpolate.interp1d(Time, U, kind="previous", axis=0, fill_value="extrapolate")
+        elif backend.backend == "torch":
+            self.ufunc = scipy.interpolate.interp1d(
+                Time, numpy.array(U.numpy(force=True)), kind="previous", axis=0, fill_value="extrapolate"
+            )
         self.equations = equations
         self.B = backend
 
@@ -96,20 +99,26 @@ def cast_backend(method):
     :param method:
     :return:
     """
+
     @functools.wraps(method)
     def _impl(self, *method_args, **method_kwargs):
         method_output = method(self, *method_args, **method_kwargs)
         if type(method_output) is dict:
-            return {k: self.B.cast(v, dtype=self.B.core.float32) if k != 'ts' else v
-                    for k, v in method_output.items()}
+            return {k: self.B.cast(v, dtype=self.B.core.float32) if k != "ts" else v for k, v in method_output.items()}
         return self.B.cast(method_output, dtype=self.B.core.float32)
 
     return _impl
 
 
 class EmulatorBase(ABC, torch.nn.Module):
-    def __init__(self, exclude_norms=['Time'], backend='numpy', requires_grad=False,
-                 seed: Union[int,np.random._generator.Generator]=59, set_stats=True):
+    def __init__(
+        self,
+        exclude_norms=["Time"],
+        backend="numpy",
+        requires_grad=False,
+        seed: Union[int, np.random._generator.Generator] = 59,
+        set_stats=True,
+    ):
         """
 
         :param ts: (float) Time step for numerical integration
@@ -122,9 +131,9 @@ class EmulatorBase(ABC, torch.nn.Module):
         self.B = Backend(backend)
         self.rng = np.random.default_rng(seed=seed)
         self.exclude_norms = exclude_norms
-        if not hasattr(self, 'nsim'):
+        if not hasattr(self, "nsim"):
             self.nsim = 1001
-        if not hasattr(self, 'ts'):
+        if not hasattr(self, "ts"):
             self.ts = 0.1
         self.variables, self.constants, self._params, self.meta = self.add_missing_parameters()
         self.set_params(self._params, requires_grad=requires_grad)
@@ -143,14 +152,14 @@ class EmulatorBase(ABC, torch.nn.Module):
 
     def set_params(self, parameters, requires_grad=False, cast=True):
         if cast:
-            parameters = {k: self.B.grad(self.B.cast(v, dtype=self.B.core.float32), requires_grad)
-                          for k, v in parameters.items()}
-        params_shapes = {k: v.shape[-1] for k, v in parameters.items()
-                         if hasattr(v, 'shape') and len(v.shape) > 0}
+            parameters = {
+                k: self.B.grad(self.B.cast(v, dtype=self.B.core.float32), requires_grad) for k, v in parameters.items()
+            }
+        params_shapes = {k: v.shape[-1] for k, v in parameters.items() if hasattr(v, "shape") and len(v.shape) > 0}
         for k, v in parameters.items():
             setattr(self, k, v)
         for k, v in params_shapes.items():
-            setattr(self, f'n{k}', v)
+            setattr(self, f"n{k}", v)
 
     @property
     def params(self):
@@ -159,7 +168,7 @@ class EmulatorBase(ABC, torch.nn.Module):
     @property
     @params.setter
     def params(self, params):
-        assert isinstance(params, dict), 'Need to set params with dictionary {str: numeric}'
+        assert isinstance(params, dict), "Need to set params with dictionary {str: numeric}"
         self._params = {**self._params, **params}
         self.set_params(params)
 
@@ -209,33 +218,48 @@ class EmulatorBase(ABC, torch.nn.Module):
         :param nsim: (int) Number of simulation steps to use in defining box
         """
         if sim is None:
-            if hasattr(self, 'x0'):
+            if hasattr(self, "x0"):
                 x0 = self.x0 if x0 is None else self.B.cast(x0)
             nsim = self.nsim if nsim is None else nsim
-            if hasattr(self, 'U'):
+            if hasattr(self, "U"):
                 U = self.U if U is None else self.B.cast(U)
                 sim = self.simulate(x0=x0, U=U)
-            elif hasattr(self, 'D'):
+            elif hasattr(self, "D"):
                 D = self.D if D is None else self.B.cast(D)
                 sim = self.simulate(x0=x0, U=U, D=D)
-            elif hasattr(self, 'x0'):
+            elif hasattr(self, "x0"):
                 sim = self.simulate(x0=x0, nsim=nsim)
             else:
                 sim = self.simulate(nsim=nsim)
         if self.B.core is numpy:
-            self.stats = {k: {'min': v.min(axis=0), 'max': v.max(axis=0),
-                              'mean': v.mean(axis=0), 'var': v.var(axis=0),
-                              'std': v.std(axis=0)} for k, v in sim.items() if k not in self.exclude_norms}
+            self.stats = {
+                k: {
+                    "min": v.min(axis=0),
+                    "max": v.max(axis=0),
+                    "mean": v.mean(axis=0),
+                    "var": v.var(axis=0),
+                    "std": v.std(axis=0),
+                }
+                for k, v in sim.items()
+                if k not in self.exclude_norms
+            }
         elif self.B.core is torch:
-            self.stats = {k: {'min': v.min(axis=0)[0].detach(), 'max': v.max(axis=0)[0].detach(),
-                              'mean': v.mean(axis=0).detach(), 'var': v.var(axis=0).detach(),
-                              'std': v.std(axis=0).detach()} for k, v in sim.items() if k not in self.exclude_norms}
+            self.stats = {
+                k: {
+                    "min": v.min(axis=0)[0].detach(),
+                    "max": v.max(axis=0)[0].detach(),
+                    "mean": v.mean(axis=0).detach(),
+                    "var": v.var(axis=0).detach(),
+                    "std": v.std(axis=0).detach(),
+                }
+                for k, v in sim.items()
+                if k not in self.exclude_norms
+            }
 
         self.stats_data = sim
-        shapes = {k.lower(): v.shape[-1] for k, v in sim.items()
-                  if hasattr(v, 'shape')}
+        shapes = {k.lower(): v.shape[-1] for k, v in sim.items() if hasattr(v, "shape")}
         for k, v in shapes.items():
-            setattr(self, f'n{k}', v)
+            setattr(self, f"n{k}", v)
         self.normalizers = {k: StandardScaler(v) for k, v in self.stats.items()}
 
     @cast_backend
@@ -245,7 +269,7 @@ class EmulatorBase(ABC, torch.nn.Module):
 
         :param box: Dictionary with keys 'min' and 'max' and values np.arrays with shape=(nx,)
         """
-        return self.rng.uniform(low=self.stats['X']['min'], high=self.stats['X']['max'])
+        return self.rng.uniform(low=self.stats["X"]["min"], high=self.stats["X"]["max"])
 
     def _plot(self, data=None):
         """
@@ -258,18 +282,18 @@ class EmulatorBase(ABC, torch.nn.Module):
         data = self.stats_data if data is None else data
         figsize = 25
         nrows = self.ny
-        nrows = nrows + self.nu if hasattr(self, 'nu') else nrows
+        nrows = nrows + self.nu if hasattr(self, "nu") else nrows
         fig, ax = plt.subplots(nrows, figsize=(figsize, figsize))
         plt.xticks(fontsize=figsize)
-        labels = [f'$y_{k}$' for k in range(data['Y'].shape[-1])]
-        for row, (y, label) in enumerate(zip(data['Y'].T, labels)):
+        labels = [f"$y_{k}$" for k in range(data["Y"].shape[-1])]
+        for row, (y, label) in enumerate(zip(data["Y"].T, labels)):
             axe = ax[row]
             axe.set_ylabel(label, rotation=0, labelpad=20, fontsize=figsize)
             axe.plot(y)
             axe.tick_params(labelbottom=False, labelsize=figsize)
-        if hasattr(self, 'nu'):
-            labels = [f'$u_{k}$' for k in range(data['U'].shape[-1])]
-            for row, (u, label) in enumerate(zip(data['U'].T, labels)):
+        if hasattr(self, "nu"):
+            labels = [f"$u_{k}$" for k in range(data["U"].shape[-1])]
+            for row, (u, label) in enumerate(zip(data["U"].T, labels)):
                 axe = ax[row + self.ny]
                 axe.set_ylabel(label, rotation=0, labelpad=20, fontsize=figsize)
                 axe.plot(u)
@@ -292,13 +316,12 @@ class EmulatorBase(ABC, torch.nn.Module):
             plt.show()
 
     def save_random_state(self):
-        """ Save random state for later use """
+        """Save random state for later use"""
         self.rng_state = self.rng.bit_generator.state
 
     def restore_random_state(self, rng_state=None):
-        """ Load random state """
-        self.rng.bit_generator.state = self.rng_state if rng_state is None else \
-                                       rng_state
+        """Load random state"""
+        self.rng.bit_generator.state = self.rng_state if rng_state is None else rng_state
 
 
 class ODE_NonAutonomous(EmulatorBase):
@@ -308,8 +331,8 @@ class ODE_NonAutonomous(EmulatorBase):
 
     def add_missing_parameters(self):
         variables, constants, parameters, meta = self.params
-        if 'U' not in variables:
-            variables['U'] = self.get_U(self.nsim + 1)
+        if "U" not in variables:
+            variables["U"] = self.get_U(self.nsim + 1)
         return variables, constants, parameters, meta
 
     def get_simulation_args(self, nsim, Time, ts, x0, U):
@@ -365,7 +388,7 @@ class ODE_NonAutonomous(EmulatorBase):
             X = self.B.odeint(equation, x0, Time, options={"grid_points": Time, "eps": 1e-6})
         else:
             X = self.B.odeint(equation, x0, Time)
-        return {'Y': X[1:], 'X': X[1:], 'U': U[1:], 'Time': Time[1:]}
+        return {"Y": X[1:], "X": X[1:], "U": U[1:], "Time": Time[1:]}
 
     @cast_backend
     def get_U(self, nsim, umin=None, umax=None, signal=None, **signal_kwargs):
@@ -376,12 +399,11 @@ class ODE_NonAutonomous(EmulatorBase):
 
         """
         if signal is None:
-            return self.rng.normal(loc=self.stats['U']['mean'], scale=self.stats['U']['std'],
-                                   size=(nsim, self.nu))
+            return self.rng.normal(loc=self.stats["U"]["mean"], scale=self.stats["U"]["std"], size=(nsim, self.nu))
         if umin is None:
-            umin = self.umin if hasattr(self, 'umin') else self.stats['U']['min']
+            umin = self.umin if hasattr(self, "umin") else self.stats["U"]["min"]
         if umax is None:
-            umax = self.umax if hasattr(self, 'umax') else self.stats['U']['max']
+            umax = self.umax if hasattr(self, "umax") else self.stats["U"]["max"]
         d = umin.ravel().shape[0]
         return signal(nsim=nsim, d=d, min=umin, rng=self.rng, max=umax, **signal_kwargs)
 
@@ -393,8 +415,27 @@ class ODE_NonAutonomous(EmulatorBase):
         :param nsim: (int) Length of sequence
         :return: Matrix nsim X nx0
         """
-        return sines(nsim, self.nx0,
-                     min=self.stats['X']['max'], max=self.stats['X']['min'], rng=self.rng)
+        return sines(nsim, self.nx0, min=self.stats["X"]["max"], max=self.stats["X"]["min"], rng=self.rng)
+
+    def get_W(self, nsim, signal=None, **noise_kwargs):
+        """
+        For sampling process noise if specified
+        """
+        if signal is None:
+            W = noise(nsim, self.nx0, **noise_kwargs)
+        else:
+            W = noise
+        return W
+
+    def get_V(self, nsim, signal=None, **noise_kwargs):
+        """
+        For sampling process noise if specified
+        """
+        if signal is None:
+            V = noise(nsim, self.nx0, **noise_kwargs)
+        else:
+            V = noise
+        return V
 
 
 class ODE_Autonomous(EmulatorBase):
@@ -409,13 +450,12 @@ class ODE_Autonomous(EmulatorBase):
     @cast_backend
     def forward(self, x, t):
         x, t = x.flatten(), t.flatten()[0]
-        dT = [t, t+self.ts]
+        dT = [t, t + self.ts]
         xdot = self.B.odeint(self.equations, x, dT)
         return xdot[-1].reshape(1, -1)
 
     @cast_backend
     def simulate(self, nsim=None, Time=None, ts=None, x0=None):
-
         """
         :param nsim: (int) Number of steps for open loop response
         :param ninit: (float) initial simulation time
@@ -427,11 +467,7 @@ class ODE_Autonomous(EmulatorBase):
         nsim = nsim if nsim is not None else self.nsim
         ts = ts if ts is not None else self.ts
         x0 = x0 if x0 is not None else self.x0
-        Time = Time if Time is not None else self.B.core.arange(0, nsim+1) * ts
+        Time = Time if Time is not None else self.B.core.arange(0, nsim + 1) * ts
         assert x0.shape[0] % self.nx0 == 0, "Mismatch in x0 size"
         X = self.B.odeint(self.equations, x0, Time)
-        return {'Y': X[1:], 'X': X[1:], 'Time': Time[1:]}
-
-
-
-
+        return {"Y": X[1:], "X": X[1:], "Time": Time[1:]}
